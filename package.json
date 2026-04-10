@@ -1,0 +1,17 @@
+{
+  "name": "plc-listener",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "PLC TCP listener on port 8088",
+  "main": "listener.js",
+  "scripts": {
+    "start": "node index.js",
+    "client": "node client.js",
+    "listener": "node listener.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "luxon": "^3.7.2",
+    "ws": "^8.19.0"
+  }
+}
