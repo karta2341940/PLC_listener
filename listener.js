@@ -2,7 +2,7 @@ import net from 'net';
 import readline from 'readline';
 import { DateTime } from 'luxon';
 
-const SERVER_PORT = 8100;
+const SERVER_PORT = 8001;
 const SERVER_HOST = '0.0.0.0';
 const RESPONSE_TIMEOUT_MS = 3000;
 

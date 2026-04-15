@@ -1,9 +1,9 @@
-import net from 'net';
+import dgram from 'dgram';
 import { parentPort } from 'worker_threads';
 import { DateTime } from 'luxon';
 
 const PLC_IP   = '192.168.0.10';
-const PLC_PORT = 8088;
+const PLC_PORT = 5007;
 const RESPONSE_TIMEOUT_MS = 3000;
 const POLL_INTERVAL_MS = 1000;   // 固定讀取 D514 的間隔（毫秒）
 const POLL_DEVICE = 'D';
@@ -59,8 +59,6 @@ function fmtAddr(device, addr) {
 }
 
 // ── SLMP E4 (4E frame) 封包 ───────────────────────────
-// E4 header 比 E3 多 4 bytes：Serial No (2B) + Reserved (2B)
-// 總請求 header = 13B，回應 End Code 偏移 = 13，資料起始 = 15
 let serialNo = 1;
 function nextSerial() { const s = serialNo; serialNo = (serialNo + 1) & 0xFFFF; return s; }
 
@@ -73,17 +71,17 @@ function writeE4Header(buf, dataLen) {
   buf.writeUInt16LE(0x03FF, i); i += 2;            // IO
   buf[i++] = 0x00;                                 // Channel
   buf.writeUInt16LE(dataLen, i);                   // DataLen
-  return 13; // 固定 header 長度（到 DataLen 結尾）
+  return 13;
 }
 
 function buildReadWords(deviceCode, startAddr, numPoints) {
-  const dataLen = 0x000C; // timer(2)+cmd(2)+sub(2)+addr(3)+dev(1)+pts(2)
+  const dataLen = 0x000C;
   const buf = Buffer.alloc(13 + dataLen);
   const h = writeE4Header(buf, dataLen);
   let i = h;
-  buf.writeUInt16LE(0x0010, i); i += 2;  // CPU monitor timer
-  buf.writeUInt16LE(0x0401, i); i += 2;  // Command
-  buf.writeUInt16LE(0x0000, i); i += 2;  // Subcommand (word)
+  buf.writeUInt16LE(0x0010, i); i += 2;
+  buf.writeUInt16LE(0x0401, i); i += 2;
+  buf.writeUInt16LE(0x0000, i); i += 2;
   buf[i++] = startAddr & 0xFF;
   buf[i++] = (startAddr >> 8) & 0xFF;
   buf[i++] = (startAddr >> 16) & 0xFF;
@@ -99,7 +97,7 @@ function buildReadBits(deviceCode, startAddr, numPoints) {
   let i = h;
   buf.writeUInt16LE(0x0010, i); i += 2;
   buf.writeUInt16LE(0x0401, i); i += 2;
-  buf.writeUInt16LE(0x0001, i); i += 2;  // Subcommand (bit)
+  buf.writeUInt16LE(0x0001, i); i += 2;
   buf[i++] = startAddr & 0xFF;
   buf[i++] = (startAddr >> 8) & 0xFF;
   buf[i++] = (startAddr >> 16) & 0xFF;
@@ -191,8 +189,6 @@ function parseWriteResponse(buf) {
 }
 
 // ── 狀態 ─────────────────────────────────────────────
-let socket        = null;
-let rxBuf         = Buffer.alloc(0);
 let pendingCmd    = null;
 let responseTimer = null;
 let pollTimer     = null;
@@ -203,11 +199,30 @@ function clearResponseTimer() {
   if (responseTimer) { clearTimeout(responseTimer); responseTimer = null; }
 }
 
-function handleResponse(buf) {
+// ── UDP Socket ────────────────────────────────────────
+const socket = dgram.createSocket('udp4');
+
+function udpSend(buf) {
+  socket.send(buf, 0, buf.length, PLC_PORT, PLC_IP, (err) => {
+    if (err) {
+      clearResponseTimer();
+      const cmd = pendingCmd;
+      pendingCmd = null;
+      if (cmd && !cmd.poll)
+        send({ type: 'cmd_error', message: `UDP 傳送失敗: ${err.message}` });
+      if (cmd?.poll) schedulePoll();
+    }
+  });
+}
+
+socket.on('message', (buf) => {
+  if (!pendingCmd) {
+    send({ type: 'log', level: 'warn', ts: ts(), message: `收到未預期資料: ${formatHex(buf)}` });
+    return;
+  }
   clearResponseTimer();
   const cmd = pendingCmd;
   pendingCmd = null;
-  rxBuf = Buffer.alloc(0);
 
   try {
     if (cmd.type === 'read') {
@@ -217,11 +232,7 @@ function handleResponse(buf) {
           label: `${cmd.device}${fmtAddr(cmd.device, cmd.addr + i)}`,
           value: words[i],
         }));
-        if (cmd.poll) {
-          send({ type: 'poll_result', results });
-        } else {
-          send({ type: 'read_result', results });
-        }
+        send(cmd.poll ? { type: 'poll_result', results } : { type: 'read_result', results });
       } else {
         const bits = parseReadBitsResponse(buf, cmd.points);
         const results = Array.from({ length: cmd.points }, (_, i) => ({
@@ -241,29 +252,31 @@ function handleResponse(buf) {
       send({ type: 'write_ok', device: label });
     }
   } catch (e) {
-    if (cmd.poll) {
-      // 輪詢失敗靜默處理，不干擾使用者操作
-    } else {
+    if (!cmd.poll)
       send({ type: 'cmd_error', message: e.message });
-    }
   }
 
-  // 輪詢完成後排程下一次
   if (cmd.poll) schedulePoll();
-}
+});
+
+socket.on('error', (err) => {
+  send({ type: 'log', level: 'error', ts: ts(), message: `UDP Socket 錯誤: ${err.message}` });
+});
+
+socket.bind(() => {
+  send({ type: 'ready' });
+  send({ type: 'log', level: 'info', ts: ts(), message: `UDP Socket 已就緒，目標 ${PLC_IP}:${PLC_PORT}` });
+  schedulePoll();
+});
 
 // ── D514 固定輪詢 ─────────────────────────────────────
 function doPoll() {
-  if (!socket || socket.destroyed || pendingCmd) {
-    schedulePoll();
-    return;
-  }
+  if (pendingCmd) { schedulePoll(); return; }
   const devInfo = DEVICES[POLL_DEVICE];
   pendingCmd = { type: 'read', device: POLL_DEVICE, addr: POLL_ADDR, points: 1, subtype: 'word', poll: true };
-  socket.write(buildReadWords(devInfo.code, POLL_ADDR, 1));
+  udpSend(buildReadWords(devInfo.code, POLL_ADDR, 1));
   responseTimer = setTimeout(() => {
     pendingCmd = null;
-    rxBuf = Buffer.alloc(0);
     schedulePoll();
   }, RESPONSE_TIMEOUT_MS);
 }
@@ -272,63 +285,8 @@ function schedulePoll() {
   pollTimer = setTimeout(doPoll, POLL_INTERVAL_MS);
 }
 
-function startPolling() {
-  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
-  schedulePoll();
-}
-
-function stopPolling() {
-  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
-}
-
-// ── TCP Client ────────────────────────────────────────
-function connect() {
-  socket = new net.Socket();
-  rxBuf = Buffer.alloc(0);
-
-  socket.setKeepAlive(true, 10000);
-  socket.setNoDelay(true);
-
-  socket.connect({ host: PLC_IP, port: PLC_PORT }, () => {
-    send({ type: 'plc_status', connected: true });
-    send({ type: 'log', level: 'info', ts: ts(), message: `已連線到 PLC ${PLC_IP}:${PLC_PORT}` });
-    startPolling();
-  });
-
-  socket.on('data', (chunk) => {
-    rxBuf = Buffer.concat([rxBuf, chunk]);
-    if (!pendingCmd) {
-      send({ type: 'log', level: 'warn', ts: ts(), message: `收到未預期資料: ${formatHex(rxBuf)}` });
-      rxBuf = Buffer.alloc(0);
-      return;
-    }
-    const minLen = pendingCmd.type === 'read' ? 16 : 15;
-    if (rxBuf.length >= minLen) handleResponse(rxBuf);
-  });
-
-  socket.on('error', (err) => {
-    send({ type: 'log', level: 'error', ts: ts(), message: `連線錯誤: ${err.message}` });
-  });
-
-  socket.on('close', () => {
-    stopPolling();
-    clearResponseTimer();
-    if (pendingCmd) {
-      if (!pendingCmd.poll) send({ type: 'cmd_error', message: 'PLC 連線中斷' });
-      pendingCmd = null;
-    }
-    send({ type: 'plc_status', connected: false });
-    send({ type: 'log', level: 'warn', ts: ts(), message: '連線已關閉，5 秒後重連...' });
-    setTimeout(connect, 5000);
-  });
-}
-
 // ── 接收主執行緒指令 ──────────────────────────────────
 parentPort.on('message', (msg) => {
-  if (!socket || socket.destroyed) {
-    send({ type: 'cmd_error', message: '尚未連線到 PLC' });
-    return;
-  }
   if (pendingCmd) {
     send({ type: 'cmd_error', message: '等待上一筆回應中，請稍後再試' });
     return;
@@ -342,28 +300,22 @@ parentPort.on('message', (msg) => {
 
   if (msg.type === 'read') {
     pendingCmd = { type: 'read', device: msg.device, addr: msg.addr, points: msg.points, subtype: devInfo.type === 'word' ? 'word' : 'bit' };
-    const req = devInfo.type === 'word'
+    udpSend(devInfo.type === 'word'
       ? buildReadWords(devInfo.code, msg.addr, msg.points)
-      : buildReadBits(devInfo.code, msg.addr, msg.points);
-    socket.write(req);
+      : buildReadBits(devInfo.code, msg.addr, msg.points));
 
   } else if (msg.type === 'set') {
     if (msg.subtype === 'word') {
       pendingCmd = { type: 'set', device: msg.device, addr: msg.addr, subtype: 'word', bits: [] };
-      socket.write(buildWriteWords(devInfo.code, msg.addr, [msg.value]));
+      udpSend(buildWriteWords(devInfo.code, msg.addr, [msg.value]));
     } else {
       pendingCmd = { type: 'set', device: msg.device, addr: msg.addr, subtype: 'bit', bits: msg.bits };
-      socket.write(buildWriteBits(devInfo.code, msg.addr, msg.bits));
+      udpSend(buildWriteBits(devInfo.code, msg.addr, msg.bits));
     }
   }
 
   responseTimer = setTimeout(() => {
     pendingCmd = null;
-    rxBuf = Buffer.alloc(0);
     send({ type: 'cmd_error', message: 'PLC 無回應（逾時）' });
   }, RESPONSE_TIMEOUT_MS);
 });
-
-// ── 啟動 ─────────────────────────────────────────────
-send({ type: 'ready' });
-connect();

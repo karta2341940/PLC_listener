@@ -6,25 +6,17 @@ import { dirname, join } from 'path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── 啟動背景執行緒 ────────────────────────────────────
-const worker = new Worker(join(__dirname, 'client-worker.js'));
+const worker = new Worker(join(__dirname, 'client-udp-worker.js'));
 
-let plcConnected    = false;
+let ready           = false;
 let waitingResponse = false;
 let d514Value       = null;
 
 worker.on('message', (msg) => {
   switch (msg.type) {
     case 'ready':
+      ready = true;
       rl.prompt();
-      break;
-
-    case 'plc_status':
-      plcConnected = msg.connected;
-      process.stdout.write(msg.connected
-        ? `\n[+] 已連線到 PLC\n`
-        : `\n[!] PLC 連線已斷開\n`
-      );
-      rl.prompt(true);
       break;
 
     case 'log':
@@ -36,7 +28,7 @@ worker.on('message', (msg) => {
 
     case 'poll_result':
       d514Value = msg.results[0]?.value ?? null;
-      rl.setPrompt(`plc-client [D514=${d514Value}]> `);
+      rl.setPrompt(`plc-udp [D514=${d514Value}]> `);
       rl.prompt(true);
       break;
 
@@ -70,7 +62,6 @@ worker.on('error', (err) => {
 });
 
 // ── 裝置資訊表（用於指令解析） ────────────────────────
-// addrBase: 16=16進位定址, 10=10進位定址
 const DEVICE_INFO = {
   // ── 位元裝置（16進位定址）────────────────────────────
   X:  { type: 'bit',  addrBase: 16, writable: false, desc: '輸入繼電器（唯讀）' },
@@ -105,7 +96,6 @@ const DEVICE_INFO = {
   Z:  { type: 'word', addrBase: 10, writable: true,  desc: '變址暫存器' },
 };
 
-// ── 解析裝置字串，例如 x20、y30、m100、d300、tn5 ────────
 function parseDevice(str) {
   const match = str?.match(/^(STN|STS|STC|SB|SW|DX|DY|ZR|TN|TS|TC|CN|CS|CC|SM|SD|[XYMLFBDWRVZ])([0-9a-fA-F]+)$/i);
   if (!match) return null;
@@ -117,7 +107,6 @@ function parseDevice(str) {
   return { device, addr, ...info };
 }
 
-// ── 顯示說明 ──────────────────────────────────────────
 function printHelp() {
   console.log('');
   console.log('  讀取裝置：直接輸入裝置位址');
@@ -156,11 +145,11 @@ function printHelp() {
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout,
-  prompt: 'plc-client> ',
+  prompt: 'plc-udp> ',
 });
 
-console.log('=== PLC Client ===');
-console.log('背景執行緒啟動中，連線到 PLC...');
+console.log('=== PLC UDP Client ===');
+console.log('背景執行緒啟動中...');
 printHelp();
 
 rl.on('line', (line) => {
@@ -171,8 +160,8 @@ rl.on('line', (line) => {
   if (cmd === 'help') { printHelp(); rl.prompt(); return; }
   if (cmd === 'exit') { worker.terminate(); process.exit(0); }
 
-  if (!plcConnected) {
-    console.log('  [!] 尚未連線到 PLC，請稍候...');
+  if (!ready) {
+    console.log('  [!] Socket 尚未就緒，請稍候...');
     rl.prompt();
     return;
   }
@@ -183,7 +172,6 @@ rl.on('line', (line) => {
     return;
   }
 
-  // 解析第一個參數為裝置
   const parsed = parseDevice(parts[0]);
   if (!parsed) {
     console.log(`  未知裝置或指令: ${parts[0]}，輸入 help 查看說明`);
@@ -195,7 +183,6 @@ rl.on('line', (line) => {
 
   if (parsed.type === 'bit') {
     if (second === 'on' || second === 'off') {
-      // 位元寫入
       if (!parsed.writable) {
         console.log(`  [錯誤] ${parsed.device} 為唯讀裝置，無法設置`);
         rl.prompt();
@@ -204,9 +191,7 @@ rl.on('line', (line) => {
       const bits = [second === 'on' ? 1 : 0];
       waitingResponse = true;
       worker.postMessage({ type: 'set', device: parsed.device, addr: parsed.addr, bits, subtype: 'bit' });
-
     } else {
-      // 位元讀取（支援多點）
       const points = second ? parseInt(second) : 1;
       if (isNaN(points) || points < 1) {
         console.log(`  用法: ${parts[0]} [點數]  或  ${parts[0]} on/off`);
@@ -216,11 +201,8 @@ rl.on('line', (line) => {
       waitingResponse = true;
       worker.postMessage({ type: 'read', device: parsed.device, addr: parsed.addr, points });
     }
-
   } else {
-    // 字元裝置
     if (second !== undefined) {
-      // 字元寫入
       if (!parsed.writable) {
         console.log(`  [錯誤] ${parsed.device} 為唯讀裝置，無法設置`);
         rl.prompt();
@@ -234,9 +216,7 @@ rl.on('line', (line) => {
       }
       waitingResponse = true;
       worker.postMessage({ type: 'set', device: parsed.device, addr: parsed.addr, value, subtype: 'word' });
-
     } else {
-      // 字元讀取
       waitingResponse = true;
       worker.postMessage({ type: 'read', device: parsed.device, addr: parsed.addr, points: 1 });
     }
