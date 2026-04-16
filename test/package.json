@@ -1,0 +1,15 @@
+{
+  "name": "plc-me96ss-monitor",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "ME96SS 3-1 Voltage monitor with PostgreSQL logging",
+  "main": "monitor.js",
+  "scripts": {
+    "start": "node monitor.js"
+  },
+  "dependencies": {
+    "chart.js": "^4.4.0",
+    "luxon": "^3.7.2",
+    "pg": "^8.11.0"
+  }
+}

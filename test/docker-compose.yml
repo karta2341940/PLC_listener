@@ -1,0 +1,42 @@
+services:
+  monitor:
+    build: .
+    stdin_open: true
+    tty: true
+    environment:
+      PLC_IP:           ${PLC_IP:-192.168.0.10}
+      PLC_PORT:         ${PLC_PORT:-5007}
+      # 電壓顯示更新間隔（毫秒），建議 1000
+      POLL_INTERVAL_MS:    ${POLL_INTERVAL_MS:-1000}
+      # DB 寫入間隔（毫秒），建議 10000~60000
+      DB_WRITE_INTERVAL_MS: ${DB_WRITE_INTERVAL_MS:-10000}
+      PG_HOST:          postgres
+      PG_PORT:          ${PG_PORT:-5432}
+      PG_USER:          ${PG_USER:-postgres}
+      PG_PASSWORD:      ${PG_PASSWORD:-postgres}
+      PG_DATABASE:      ${PG_DATABASE:-plc}
+      WEB_PORT:         ${WEB_PORT:-4000}
+    ports:
+      - "${WEB_PORT:-4000}:${WEB_PORT:-4000}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER:     ${PG_USER:-postgres}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-postgres}
+      POSTGRES_DB:       ${PG_DATABASE:-plc}
+    ports:
+      - "5439:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-postgres} -d ${PG_DATABASE:-plc}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
