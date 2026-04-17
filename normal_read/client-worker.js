@@ -3,7 +3,7 @@ import { parentPort } from 'worker_threads';
 import { DateTime } from 'luxon';
 
 const PLC_IP   = '192.168.0.10';
-const PLC_PORT = 5007;
+const PLC_PORT = 8002;
 const RESPONSE_TIMEOUT_MS = 3000;
 const POLL_INTERVAL_MS = 1000;   // 固定讀取 D514 的間隔（毫秒）
 const POLL_DEVICE = 'D';

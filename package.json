@@ -6,13 +6,17 @@
   "main": "listener.js",
   "scripts": {
     "start": "node index.js",
-    "client": "node client.js",
-    "client-udp": "node client-udp.js",
-    "listener": "node listener.js"
+    "client": "node normal_read/client.js",
+    "client-udp": "node normal_read_udp_ver_client-udp.js",
+    "listener": "node normal_read_server_ver/listener.js",
+    "voltage_collect":"node voltage_collect_test/monitor.js"
+
   },
   "dependencies": {
+    "chart.js": "^4.5.1",
     "express": "^5.2.1",
     "luxon": "^3.7.2",
+    "pg": "^8.20.0",
     "ws": "^8.19.0"
   }
 }

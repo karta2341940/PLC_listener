@@ -1,0 +1,49 @@
+# Environment
+
+- Docker
+- NodeJS
+
+# 執行方式
+
+安裝完環境後執行檢查程式碼中的port跟ip是否有設定好，
+然後開啟Terminal進入專案資料夾根據下方[專案說明](#專案說明)選擇執行的指令
+## 備註
+執行前需要先設定好PLC，將PLC的port打開
+
+# 專案說明
+
+|       資料夾名稱       |                         功能                         |        指令        |
+| :--------------------: | :--------------------------------------------------: | :----------------: |
+|      normal_read       |                   針對特定點位讀取                   |   npm run client   |
+|  normal_read_udp_ver   |             針對特定點位讀取(udp連線版)              | npm run client-udp |
+| normal_read_server_ver |           server版的讀取只允許PLC連至電腦            |  npm run listener  |
+|  voltage_collect_test  | 針對特定點位讀取並且固定讀取D514然後把資料寫進資料庫 |     npm start      |
+
+# voltage_collect_test
+此專固定讀取PLC的D514，然後將資料寫進資料庫中，並且有額外開一個port 4000讓使用者可以連接進去讀取。
+
+此專案使用的是PostgresSQL作為資料庫，要完整使用功能的話執行以下指令。
+```sh
+cd voltage_collect_test
+docker compose -f docker-compose.test.yml up --build
+```
+
+
+# PostgreSQL
+postgresql是目前最安全效能最好的資料庫，目前知名的主要用戶有以下
+- OpenAI
+- Apple
+- Meta
+- Amazon
+- 中鋼等等
+如果需要讀取PostgreSQL的內容可以在VSCode中安裝微軟的PostgreSQL的插件，
+## 安裝方式：
+選取左邊工具列的Extension -> 輸入Postgres -> 找到微軟的PostgreSQL插件 -> 安裝插件
+
+安裝完後工具列就會出現一個大象的圖示點下去後新增連線以下是連線資訊可在docker-compose.test.yml中查看
+|   Name   |  Value   |
+| :------: | :------: |
+|   User   | postgres |
+| password | postgres |
+|   port   |   5432   |
+| DataBase | plc_test |
