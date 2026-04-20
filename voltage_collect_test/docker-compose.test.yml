@@ -1,6 +1,7 @@
 services:
   monitor:
     build: .
+    tag: karta2341940/plc_data_collect:latest
     stdin_open: true
     tty: true
     environment:

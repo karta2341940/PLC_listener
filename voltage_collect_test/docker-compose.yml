@@ -1,15 +1,13 @@
 services:
   monitor:
     build: .
+    image: karta2341940/plc_data_collect:latest
     stdin_open: true
     tty: true
     environment:
       PLC_IP:           ${PLC_IP:-192.168.0.10}
       PLC_PORT:         ${PLC_PORT:-5007}
-      # 電壓顯示更新間隔（毫秒），建議 1000
-      POLL_INTERVAL_MS:    ${POLL_INTERVAL_MS:-1000}
-      # DB 寫入間隔（毫秒），建議 10000~60000
-      DB_WRITE_INTERVAL_MS: ${DB_WRITE_INTERVAL_MS:-10000}
+      POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-1000}
       PG_HOST:          postgres
       PG_PORT:          ${PG_PORT:-5432}
       PG_USER:          ${PG_USER:-postgres}

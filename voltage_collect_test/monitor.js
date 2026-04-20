@@ -32,7 +32,15 @@ const HTML = `<!DOCTYPE html>
   body { background: #0f172a; color: #e2e8f0; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 24px; }
   h1 { font-size: 1.2rem; margin-bottom: 8px; color: #94a3b8; }
   #current { font-size: 3rem; font-weight: bold; color: #38bdf8; margin-bottom: 8px; }
-  #status { font-size: 0.85rem; color: #64748b; margin-bottom: 16px; }
+  #status { font-size: 0.85rem; color: #64748b; margin-bottom: 12px; }
+  #ranges { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; justify-content: center; }
+  #ranges button {
+    background: #1e293b; color: #94a3b8; border: 1px solid #334155;
+    border-radius: 6px; padding: 5px 14px; cursor: pointer; font-size: 0.85rem;
+    transition: background 0.15s, color 0.15s;
+  }
+  #ranges button:hover { background: #334155; color: #e2e8f0; }
+  #ranges button.active { background: #0369a1; color: #fff; border-color: #0369a1; }
   canvas { max-width: 960px; width: 100%; }
 </style>
 </head>
@@ -40,11 +48,19 @@ const HTML = `<!DOCTYPE html>
 <h1>ME96SS 3-1 Voltage (Inst.)</h1>
 <div id="current">-- V</div>
 <div id="status">載入歷史資料中...</div>
+<div id="ranges">
+  <button data-min="15">15 分鐘</button>
+  <button data-min="30">30 分鐘</button>
+  <button data-min="60" class="active">1 小時</button>
+  <button data-min="180">3 小時</button>
+  <button data-min="360">6 小時</button>
+  <button data-min="1440">24 小時</button>
+</div>
 <canvas id="chart"></canvas>
 <script>
-const WINDOW_MS = 60 * 60 * 1000; // 1 小時滑動視窗
-const timestamps = []; // 毫秒時間戳，與 labels/data 同步
-const labels = [], data = [];
+let windowMs = 60 * 60 * 1000;
+let currentMinutes = 60;
+const timestamps = [], labels = [], data = [];
 
 const chart = new Chart(document.getElementById('chart'), {
   type: 'line',
@@ -71,8 +87,14 @@ const chart = new Chart(document.getElementById('chart'), {
   }
 });
 
+function makeLabel(d) {
+  if (currentMinutes <= 60) return d.toLocaleTimeString();
+  if (currentMinutes <= 360) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return (d.getMonth()+1) + '/' + d.getDate() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
 function trimOld() {
-  const cutoff = Date.now() - WINDOW_MS;
+  const cutoff = Date.now() - windowMs;
   while (timestamps.length && timestamps[0] < cutoff) {
     timestamps.shift(); labels.shift(); data.shift();
   }
@@ -81,20 +103,38 @@ function trimOld() {
 function addPoint(voltage, ts) {
   const d = new Date(ts);
   timestamps.push(d.getTime());
-  labels.push(d.toLocaleTimeString());
+  labels.push(makeLabel(d));
   data.push(voltage);
   trimOld();
 }
 
-// 載入近 1 小時歷史資料
-fetch('/history').then(r => r.json()).then(rows => {
-  for (const row of rows) addPoint(row.voltage, row.ts);
-  if (data.length) document.getElementById('current').textContent = data[data.length - 1] + ' V';
-  chart.update();
-  document.getElementById('status').textContent = '已載入 ' + data.length + ' 筆，SSE 連線中...';
-}).catch(() => {
-  document.getElementById('status').textContent = '歷史資料載入失敗，等待即時資料...';
+async function loadHistory(minutes) {
+  currentMinutes = minutes;
+  windowMs = minutes * 60 * 1000;
+  timestamps.length = 0; labels.length = 0; data.length = 0;
+  document.getElementById('status').textContent = '載入歷史資料中...';
+  try {
+    const rows = await fetch('/history?minutes=' + minutes).then(r => r.json());
+    for (const row of rows) addPoint(row.voltage, row.ts);
+    if (data.length) document.getElementById('current').textContent = data[data.length - 1] + ' V';
+    chart.update();
+    document.getElementById('status').textContent = '已載入 ' + data.length + ' 筆，SSE 連線中...';
+  } catch {
+    document.getElementById('status').textContent = '歷史資料載入失敗，等待即時資料...';
+  }
+}
+
+// 時間範圍切換
+document.querySelectorAll('#ranges button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#ranges button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    loadHistory(parseInt(btn.dataset.min));
+  });
 });
+
+// 初始載入
+loadHistory(60);
 
 // 即時 SSE
 const es = new EventSource('/events');
@@ -118,10 +158,13 @@ const CHARTJS_PATH = join(__dirname, 'node_modules/chart.js/dist/chart.umd.js');
 
 // ── HTTP Server ────────────────────────────────────────
 http.createServer(async (req, res) => {
-  if (req.url === '/history') {
+  if (req.url.startsWith('/history')) {
     try {
+      const qs = new URL(req.url, 'http://localhost').searchParams;
+      const raw = parseInt(qs.get('minutes') ?? '60', 10);
+      const minutes = (!isNaN(raw) && raw >= 1) ? Math.min(raw, 10080) : 60;
       const result = await pool.query(
-        `SELECT voltage, date AS ts FROM me96ss WHERE date > NOW() - INTERVAL '1 hour' ORDER BY date ASC`
+        `SELECT voltage, date AS ts FROM me96ss WHERE date > NOW() - INTERVAL '${minutes} minutes' ORDER BY date ASC`
       );
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result.rows));
